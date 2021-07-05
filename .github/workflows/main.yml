@@ -3,22 +3,26 @@ on:
   - push
 env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-  TERRAFORM_STATE_BUCKET: io.salte.us-east-1.terraform-state
-  TERRAFORM_STATE_KMS_KEY_ID: arn:aws:kms:us-east-1:853196007801:alias/io-salte-us-east-1-terraform-state
+  TERRAFORM_STATE_BUCKET: ${{ secrets.TERRAFORM_STATE_BUCKET }}
+  TERRAFORM_STATE_KMS_KEY_ID: ${{ secrets.TERRAFORM_STATE_KMS_KEY_ID }}
+  TF_VAR_private_vpc_name: ${{ secrets.private_vpc_name }}
+  TF_VAR_public_vpc_name: ${{ secrets.public_vpc_name }}
 jobs:
   initialize:
     name: 'Initialize Derived Variables'
     runs-on: ubuntu-latest
     outputs:
-      deployable: ${{ steps.extract_branch.outputs.deployable }}
-      git_branch: ${{ steps.extract_branch.outputs.git_branch }}
-      git_commit_short_sha: ${{ steps.extract_branch.outputs.git_commit_short_sha }}
-      git_repository: ${{ steps.extract_branch.outputs.git_repository }}
+      deployable: ${{ steps.default.outputs.deployable }}
+      git_branch: ${{ steps.default.outputs.git_branch }}
+      git_commit_short_sha: ${{ steps.default.outputs.git_commit_short_sha }}
+      git_repository: ${{ steps.default.outputs.git_repository }}
     steps:
-      - run: |
+      - id: default
+        run: |
           BRANCH=${GITHUB_REF#refs/heads/}
+          echo "BRANCH: $BRANCH"
           if [[ $BRANCH == *"/"* ]]; then
             echo ::set-output name=deployable::$(echo false)
             echo ::set-output name=git_branch::$(echo default)
@@ -31,6 +35,10 @@ jobs:
   terraform:
     name: 'Run Terraform Actions'
     runs-on: ubuntu-latest
+    needs: initialize
+    defaults:
+      run:
+        working-directory: src
     env:
       TF_VAR_GIT_COMMIT_SHORT_SHA: ${{ needs.initialize.outputs.git_commit_short_sha }}
       TF_VAR_GIT_REPOSITORY: ${{ needs.initialize.outputs.git_repository }}
@@ -39,6 +47,8 @@ jobs:
         uses: actions/checkout@v2
       - name: 'Install Terraform'
         uses: hashicorp/setup-terraform@v1
+      - name: 'Validate Terraform Formatting'
+        run: terraform fmt -check
       - if: ${{ needs.initialize.outputs.deployable == 'false' }}
         name: 'Initialize Terraform Project w/o Backend'
         run: terraform init -input=false -backend=false
@@ -49,10 +59,10 @@ jobs:
         run: terraform validate
       - name: 'Create Terraform Project Deployment Plan'
         run: |
-          terraform workspace select ${{ needs.initialize.outputs.git_branch }} || terraform workspace new ${{ needs.initialize.outputs.git_branch }}
-          terraform plan -out terraform.plan
+          terraform workspace select ${{ needs.initialize.outputs.git_branch }} 2>/dev/null || terraform workspace new ${{ needs.initialize.outputs.git_branch }}
+          terraform plan -input=false -out=terraform.plan
       - if: ${{ needs.initialize.outputs.deployable == 'true' }}
         name: 'Execute Terraform Project Deployment Plan'
         run: |
           terraform workspace select ${{ needs.initialize.outputs.git_branch }}
-          terraform deploy terraform.plan
+          terraform apply -input=false terraform.plan
