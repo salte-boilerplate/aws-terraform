@@ -35,27 +35,24 @@ jobs:
       TF_VAR_GIT_COMMIT_SHORT_SHA: ${{ needs.initialize.outputs.git_commit_short_sha }}
       TF_VAR_GIT_REPOSITORY: ${{ needs.initialize.outputs.git_repository }}
     steps:
-      - name: 'Checkout'
+      - name: 'Checkout Source Code'
         uses: actions/checkout@v2
-      - if: ${{ needs.initialize.outputs.deployable == 'false' }}
-        name: 'Initialize w/o Backend'
+      - name: 'Install Terraform'
         uses: hashicorp/setup-terraform@v1
+      - if: ${{ needs.initialize.outputs.deployable == 'false' }}
+        name: 'Initialize Terraform Project w/o Backend'
         run: terraform init -input=false -backend=false
       - if: ${{ needs.initialize.outputs.deployable == 'true' }}
-        name: 'Initialize w/ Backend'
-        uses: hashicorp/setup-terraform@v1
+        name: 'Initialize Terraform Project w/ Backend'
         run: terraform init -input=false -backend-config="bucket=${TERRAFORM_STATE_BUCKET}" -backend-config="key=${{ needs.initialize.outputs.git_repository }}" -backend-config="encrypt=true" -backend-config="kms_key_id=${TERRAFORM_STATE_KMS_KEY_ID}"
       - name: 'Validate'
-        uses: hashicorp/setup-terraform@v1
         run: terraform validate
-      - name: 'Plan'
-        uses: hashicorp/setup-terraform@v1
+      - name: 'Create Terraform Project Deployment Plan'
         run: |
           terraform workspace select ${{ needs.initialize.outputs.git_branch }} || terraform workspace new ${{ needs.initialize.outputs.git_branch }}
           terraform plan -out terraform.plan
       - if: ${{ needs.initialize.outputs.deployable == 'true' }}
-        name: 'Deploy'
-        uses: hashicorp/setup-terraform@v1
+        name: 'Execute Terraform Project Deployment Plan'
         run: |
           terraform workspace select ${{ needs.initialize.outputs.git_branch }}
           terraform deploy terraform.plan
