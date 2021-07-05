@@ -1,0 +1,61 @@
+name: 'Main'
+on:
+  - push
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  TERRAFORM_STATE_BUCKET: io.salte.us-east-1.terraform-state
+  TERRAFORM_STATE_KMS_KEY_ID: arn:aws:kms:us-east-1:853196007801:alias/io-salte-us-east-1-terraform-state
+jobs:
+  initialize:
+    name: 'Initialize Derived Variables'
+    runs-on: ubuntu-latest
+    outputs:
+      deployable: ${{ steps.extract_branch.outputs.deployable }}
+      git_branch: ${{ steps.extract_branch.outputs.git_branch }}
+      git_commit_short_sha: ${{ steps.extract_branch.outputs.git_commit_short_sha }}
+      git_repository: ${{ steps.extract_branch.outputs.git_repository }}
+    steps:
+      - run: |
+          BRANCH=${GITHUB_REF#refs/heads/}
+          if [[ $BRANCH == *"/"* ]]; then
+            echo ::set-output name=deployable::$(echo false)
+            echo ::set-output name=git_branch::$(echo default)
+          else
+            echo ::set-output name=deployable::$(echo true)
+            echo ::set-output name=git_branch::$(echo ${BRANCH})
+          fi
+          echo ::set-output name=git_commit_short_sha::$(echo ${GITHUB_SHA:0:8})
+          echo ::set-output name=git_repository::$(echo ${GITHUB_REPOSITORY//\//-})
+  terraform:
+    name: 'Run Terraform Actions'
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_GIT_COMMIT_SHORT_SHA: ${{ needs.initialize.outputs.git_commit_short_sha }}
+      TF_VAR_GIT_REPOSITORY: ${{ needs.initialize.outputs.git_repository }}
+    steps:
+      - name: 'Checkout'
+        uses: actions/checkout@v2
+      - if: ${{ needs.initialize.outputs.deployable == 'false' }}
+        name: 'Initialize w/o Backend'
+        uses: hashicorp/setup-terraform@v1
+        run: terraform init -input=false -backend=false
+      - if: ${{ needs.initialize.outputs.deployable == 'true' }}
+        name: 'Initialize w/ Backend'
+        uses: hashicorp/setup-terraform@v1
+        run: terraform init -input=false -backend-config="bucket=${TERRAFORM_STATE_BUCKET}" -backend-config="key=${{ needs.initialize.outputs.git_repository }}" -backend-config="encrypt=true" -backend-config="kms_key_id=${TERRAFORM_STATE_KMS_KEY_ID}"
+      - name: 'Validate'
+        uses: hashicorp/setup-terraform@v1
+        run: terraform validate
+      - name: 'Plan'
+        uses: hashicorp/setup-terraform@v1
+        run: |
+          terraform workspace select ${{ needs.initialize.outputs.git_branch }} || terraform workspace new ${{ needs.initialize.outputs.git_branch }}
+          terraform plan -out terraform.plan
+      - if: ${{ needs.initialize.outputs.deployable == 'true' }}
+        name: 'Deploy'
+        uses: hashicorp/setup-terraform@v1
+        run: |
+          terraform workspace select ${{ needs.initialize.outputs.git_branch }}
+          terraform deploy terraform.plan
